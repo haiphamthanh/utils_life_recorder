@@ -9,21 +9,22 @@
   <body>
     <div class="layout">
       <aside class="sidebar">
-        <div>
+        <div class="brand">
           <p class="eyebrow">Recorder</p>
           <h1 id="app-name">Life Recorder</h1>
-          <p class="muted">Nhap nhanh, luu markdown, theo doi lien he giua cac note.</p>
+          <p class="muted">Nhap mot khoi noi dung. He thong tu chuan hoa va dua vao folder phu hop.</p>
         </div>
 
         <nav class="tabs">
           <button class="tab is-active" data-tab="capture">Capture</button>
-          <button class="tab" data-tab="manage">Manage</button>
+          <button class="tab" data-tab="folders">Folders</button>
+          <button class="tab" data-tab="settings">Settings</button>
           <button class="tab" data-tab="history">History</button>
         </nav>
 
         <section>
           <div class="section-title">
-            <h2>Folders</h2>
+            <h2>Folder Tree</h2>
             <span id="folder-count" class="pill"></span>
           </div>
           <div id="folder-tree" class="tree"></div>
@@ -33,69 +34,59 @@
       <main class="main">
         <section class="panel tab-panel is-active" data-panel="capture">
           <div class="section-title">
-            <h2>New Entry</h2>
+            <h2>Quick Capture</h2>
             <span id="save-status" class="muted"></span>
           </div>
 
           <form id="note-form" class="stack">
-            <div class="grid two">
-              <label>
-                <span>Folder</span>
-                <select name="folderId" id="folder-select"></select>
-              </label>
-              <label>
-                <span>Author</span>
-                <input type="text" name="author" id="author-input" maxlength="80" />
-              </label>
-            </div>
-
             <label>
-              <span>Title</span>
-              <input type="text" name="title" id="title-input" maxlength="160" required />
-            </label>
-
-            <label>
-              <span>Raw content</span>
-              <textarea name="rawContent" id="raw-content-input" rows="14" required></textarea>
+              <span>Content</span>
+              <textarea id="raw-content-input" name="rawContent" rows="18" required></textarea>
             </label>
 
             <div class="actions">
-              <button type="submit" class="primary">Save Note</button>
+              <button type="submit" class="primary">Save</button>
             </div>
           </form>
 
           <div id="note-result" class="result hidden"></div>
         </section>
 
-        <section class="panel tab-panel" data-panel="manage">
+        <section class="panel tab-panel" data-panel="folders">
+          <div class="section-title">
+            <div>
+              <h2 id="folder-view-title">Folder Notes</h2>
+              <p id="folder-view-description" class="muted"></p>
+            </div>
+            <select id="folder-view-select" class="compact-select"></select>
+          </div>
+          <div id="folder-notes-list" class="stack"></div>
+        </section>
+
+        <section class="panel tab-panel" data-panel="settings">
           <div class="section-title">
             <h2>Settings</h2>
-            <span class="muted">Fixed folders only. No auto-create.</span>
+            <span class="muted">Them folder bang popup de AI tao metadata co nghia.</span>
           </div>
 
           <form id="settings-form" class="stack">
             <div class="grid two">
               <label>
                 <span>App name</span>
-                <input type="text" name="appName" id="settings-app-name" maxlength="80" required />
+                <input type="text" id="settings-app-name" maxlength="80" required />
               </label>
               <label>
-                <span>Default author</span>
-                <input type="text" name="defaultAuthor" id="settings-default-author" maxlength="80" required />
+                <span>Default AI CLI</span>
+                <select id="settings-ai-cli">
+                  <option value="codex">Codex CLI</option>
+                  <option value="copilot">Copilot CLI</option>
+                </select>
               </label>
             </div>
 
-            <label>
-              <span>Default AI CLI</span>
-              <select name="preferredAiCli" id="settings-ai-cli">
-                <option value="codex">Codex CLI</option>
-                <option value="copilot">Copilot CLI</option>
-              </select>
-            </label>
-
             <div class="section-title">
-              <h3>Folder Tree</h3>
-              <button type="button" id="add-folder-button" class="secondary">Add Folder</button>
+              <h3>Folders</h3>
+              <button type="button" id="open-folder-modal-button" class="secondary">Add Folder</button>
             </div>
 
             <div id="folder-editor" class="stack"></div>
@@ -116,27 +107,27 @@
       </main>
     </div>
 
-    <template id="folder-editor-template">
-      <div class="folder-item">
-        <div class="grid two">
-          <label>
-            <span>Id</span>
-            <input type="text" data-field="id" maxlength="40" required />
-          </label>
-          <label>
-            <span>Label</span>
-            <input type="text" data-field="label" maxlength="80" required />
-          </label>
+    <div id="folder-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-card">
+        <div class="section-title">
+          <h2>New Folder</h2>
+          <button type="button" id="close-folder-modal-button" class="ghost">Close</button>
         </div>
-        <label>
-          <span>Description</span>
-          <input type="text" data-field="description" maxlength="160" />
-        </label>
-        <div class="actions end">
-          <button type="button" class="danger" data-action="remove-folder">Remove</button>
-        </div>
+
+        <form id="folder-draft-form" class="stack">
+          <label>
+            <span>Mo ta y nghia folder muon tao</span>
+            <textarea id="folder-intent-input" rows="6" required></textarea>
+          </label>
+
+          <div class="actions">
+            <button type="submit" class="primary">Generate Folder</button>
+          </div>
+        </form>
+
+        <div id="folder-draft-result" class="result hidden"></div>
       </div>
-    </template>
+    </div>
 
     <script src="/app.js"></script>
   </body>
