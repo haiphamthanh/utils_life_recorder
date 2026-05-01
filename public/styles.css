@@ -127,6 +127,13 @@ h3 {
   border-color: var(--line);
 }
 
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .panel {
   display: none;
   min-height: calc(100vh - 48px);
@@ -193,6 +200,7 @@ textarea {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .tree,
@@ -200,6 +208,28 @@ textarea {
 .tag-list {
   display: grid;
   gap: 12px;
+}
+
+.filter-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(180px, 0.7fr) minmax(150px, 0.5fr);
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.info-box {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-alt);
+}
+
+.info-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
 }
 
 .tree-button,
@@ -213,8 +243,20 @@ textarea {
   padding: 14px;
 }
 
+.polished-card {
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+}
+
 .tree-button {
   text-align: left;
+  transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.tree-button:hover,
+.note-row:hover,
+.result:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
 }
 
 .tree-button.is-selected {
@@ -247,15 +289,58 @@ textarea {
   gap: 8px;
 }
 
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: #e8f6f5;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .note-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 220px;
   gap: 16px;
+  cursor: default;
 }
 
 .note-row-main {
   display: grid;
   gap: 8px;
+}
+
+.result-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.guide-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #fbfcfe 0%, #f2f7fb 100%);
+}
+
+.guide-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.guide-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
 }
 
 .compact-select {
@@ -278,6 +363,40 @@ textarea {
   background: #fff;
   box-shadow: var(--shadow);
   padding: 24px;
+}
+
+.modal-wide {
+  width: min(920px, 100%);
+}
+
+.detail-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.detail-section {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.detail-pre {
+  padding: 14px;
+  border-radius: 8px;
+  background: #f7f9fc;
+  border: 1px solid var(--line);
+  max-height: 320px;
+  overflow: auto;
+}
+
+.empty-state {
+  padding: 24px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fafbfd;
 }
 
 .hidden {
@@ -315,11 +434,18 @@ pre {
 
   .grid.two,
   .tabs,
+  .filter-bar,
+  .guide-card,
   .note-row {
     grid-template-columns: 1fr;
   }
 
   .compact-select {
     max-width: none;
+  }
+
+  .guide-actions,
+  .result-header {
+    justify-content: flex-start;
   }
 }

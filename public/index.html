@@ -35,7 +35,7 @@
         <section class="panel tab-panel is-active" data-panel="capture">
           <div class="section-title">
             <h2>Quick Capture</h2>
-            <span id="save-status" class="muted"></span>
+            <span id="save-status" class="muted">Double click ket qua de xem lai note da luu.</span>
           </div>
 
           <form id="note-form" class="stack">
@@ -60,6 +60,24 @@
             </div>
             <select id="folder-view-select" class="compact-select"></select>
           </div>
+          <div class="filter-bar">
+            <label>
+              <span>Search</span>
+              <input type="search" id="folder-search-input" placeholder="Tim theo title, summary, keyword" />
+            </label>
+            <label>
+              <span>Tag</span>
+              <select id="folder-tag-filter">
+                <option value="">All tags</option>
+              </select>
+            </label>
+            <label>
+              <span>Year</span>
+              <select id="folder-year-filter">
+                <option value="">All years</option>
+              </select>
+            </label>
+          </div>
           <div id="folder-notes-list" class="stack"></div>
         </section>
 
@@ -70,19 +88,31 @@
           </div>
 
           <form id="settings-form" class="stack">
+            <div class="guide-card">
+              <div class="guide-copy">
+                <strong>Huong dan lay key</strong>
+                <p class="muted">Dung OpenRouter free de thu nghiem nhanh. Ve dai han nen uu tien DeepSeek direct de on dinh hon.</p>
+              </div>
+              <div class="guide-actions">
+                <a class="secondary button-link" href="https://openrouter.ai/workspaces/default/keys" target="_blank" rel="noreferrer">Lay key OpenRouter</a>
+                <a class="secondary button-link" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">Khuyen nghi DeepSeek</a>
+              </div>
+            </div>
             <div class="grid two">
               <label>
                 <span>App name</span>
                 <input type="text" id="settings-app-name" maxlength="80" required />
               </label>
-              <label>
-                <span>Default AI CLI</span>
-                <select id="settings-ai-cli">
-                  <option value="codex">Codex CLI</option>
-                  <option value="copilot">Copilot CLI</option>
-                </select>
-              </label>
+              <div class="info-box">
+                <span class="info-label">AI Model</span>
+                <strong id="settings-ai-model">openrouter/free</strong>
+                <p class="muted">Doc tu backend. API key nam trong `OPENROUTER_API_KEY`.</p>
+              </div>
             </div>
+            <label>
+              <span>OpenRouter API Key</span>
+              <input type="password" id="settings-api-key" autocomplete="off" placeholder="sk-or-v1-..." />
+            </label>
 
             <div class="section-title">
               <h3>Folders</h3>
@@ -126,6 +156,36 @@
         </form>
 
         <div id="folder-draft-result" class="result hidden"></div>
+      </div>
+    </div>
+
+    <div id="note-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-card modal-wide">
+        <div class="section-title">
+          <div>
+            <h2 id="note-modal-title">Note Detail</h2>
+            <p id="note-modal-meta" class="muted"></p>
+          </div>
+          <button type="button" id="close-note-modal-button" class="ghost">Close</button>
+        </div>
+        <div class="detail-grid">
+          <section class="detail-section">
+            <h3>Summary</h3>
+            <p id="note-modal-summary"></p>
+          </section>
+          <section class="detail-section">
+            <h3>Keywords</h3>
+            <div id="note-modal-keywords" class="tag-list"></div>
+          </section>
+          <section class="detail-section">
+            <h3>Related</h3>
+            <div id="note-modal-related" class="tag-list"></div>
+          </section>
+          <section class="detail-section">
+            <h3>Raw Content</h3>
+            <pre id="note-modal-raw" class="detail-pre"></pre>
+          </section>
+        </div>
       </div>
     </div>
 

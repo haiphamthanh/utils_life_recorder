@@ -1,26 +1,26 @@
 {
   "appName": "Life Recorder",
-  "defaultAuthor": "anonymous",
-  "preferredAiCli": "codex",
-  "supportedAiCli": [
-    "codex",
-    "copilot"
-  ],
+  "aiProvider": "openrouter",
+  "aiModel": "openrouter/free",
+  "openRouterApiKey": "",
   "folders": [
     {
       "id": "idea",
       "label": "Idea",
-      "description": "Y tuong, huong di, khai niem moi"
+      "description": "Y tuong, huong di, khai niem moi",
+      "hints": []
     },
     {
       "id": "note",
       "label": "Note",
-      "description": "Ghi chu nhanh, observation, thong tin tam"
+      "description": "Ghi chu nhanh, observation, thong tin tam",
+      "hints": []
     },
     {
       "id": "topic",
       "label": "Topic",
-      "description": "Chu de dang theo duoi dai hon"
+      "description": "Chu de dang theo duoi dai hon",
+      "hints": []
     }
   ]
 }

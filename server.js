@@ -1,12 +1,11 @@
+require("dotenv").config();
+
 const express = require("express");
 const fs = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
-const os = require("os");
-const { execFile } = require("child_process");
-const { promisify } = require("util");
+const OpenAI = require("openai");
 
-const execFileAsync = promisify(execFile);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "127.0.0.1";
@@ -19,7 +18,7 @@ const SYSTEM_DIR = path.join(STORAGE_DIR, "system");
 const SETTINGS_PATH = path.join(SYSTEM_DIR, "settings.json");
 const INDEX_PATH = path.join(SYSTEM_DIR, "index.json");
 const HISTORY_PATH = path.join(SYSTEM_DIR, "history.log");
-const DEFAULT_SUPPORTED_AI = ["codex", "copilot"];
+const DEFAULT_MODEL = process.env.AI_MODEL || "openrouter/free";
 let writeQueue = Promise.resolve();
 
 app.use(express.json({ limit: "1mb" }));
@@ -67,6 +66,107 @@ function normalizeFolder(folder) {
   };
 }
 
+function deriveTitle(text) {
+  const normalized = normalizeWhitespace(text);
+  const firstLine = normalized.split("\n")[0] || normalized;
+  const compact = firstLine.replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return "Untitled";
+  }
+  return compact.length > 72 ? `${compact.slice(0, 69).trim()}...` : compact;
+}
+
+function extractKeywords(text) {
+  const stopWords = new Set([
+    "the", "and", "for", "that", "this", "with", "from", "have", "are", "was", "were",
+    "toi", "ban", "mot", "nhung", "duoc", "trong", "dang", "sau", "khi", "cho", "cua",
+    "voi", "vao", "tren", "hay", "neu", "can", "them", "ghi", "chu", "note", "idea"
+  ]);
+
+  const tokens = String(text || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .match(/[a-z0-9]{3,}/g) || [];
+
+  const counts = new Map();
+  for (const token of tokens) {
+    if (stopWords.has(token)) {
+      continue;
+    }
+    counts.set(token, (counts.get(token) || 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 12)
+    .map(([token]) => token);
+}
+
+function summarizeText(text) {
+  return normalizeWhitespace(text).replace(/\n/g, " ").slice(0, 280);
+}
+
+function similarityScore(base, target) {
+  const baseKeywords = new Set(base.keywords || []);
+  const targetKeywords = new Set(target.keywords || []);
+  const overlap = [...baseKeywords].filter((item) => targetKeywords.has(item));
+  const titleTokensBase = new Set((slugify(base.title).match(/[a-z0-9]+/g) || []));
+  const titleTokensTarget = new Set((slugify(target.title).match(/[a-z0-9]+/g) || []));
+  const titleOverlap = [...titleTokensBase].filter((item) => titleTokensTarget.has(item));
+
+  return {
+    overlap,
+    score: overlap.length * 1.5 + titleOverlap.length * 2
+  };
+}
+
+function collectRelatedNotes(candidate, existingNotes) {
+  return existingNotes
+    .map((note) => {
+      const relation = similarityScore(candidate, note);
+      return {
+        id: note.id,
+        title: note.title,
+        folderId: note.folderId,
+        score: relation.score,
+        overlap: relation.overlap,
+        path: note.path
+      };
+    })
+    .filter((note) => note.score >= 2.5 && note.overlap.length > 0)
+    .sort((a, b) => b.score - a.score || b.id.localeCompare(a.id))
+    .slice(0, 5);
+}
+
+function getFolderTokens(folder) {
+  return extractKeywords([folder.id, folder.label, folder.description, ...(folder.hints || [])].join(" "));
+}
+
+function classifyFolderHeuristically(rawContent, settings) {
+  const keywords = extractKeywords(rawContent);
+  const ranked = settings.folders
+    .map((folder) => {
+      const folderTokens = getFolderTokens(folder);
+      const overlap = keywords.filter((token) => folderTokens.includes(token));
+      return { folder, score: overlap.length };
+    })
+    .sort((a, b) => b.score - a.score || a.folder.label.localeCompare(b.folder.label));
+
+  return ranked[0]?.folder.id || settings.folders[0]?.id || "note";
+}
+
+function parseList(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => item.replace(/^"(.*)"$/, "$1"));
+}
+
 async function ensureBaseStructure() {
   await fs.mkdir(PUBLIC_DIR, { recursive: true });
   await fs.mkdir(NOTES_DIR, { recursive: true });
@@ -80,8 +180,8 @@ async function ensureBaseStructure() {
       JSON.stringify(
         {
           appName: "Life Recorder",
-          preferredAiCli: "codex",
-          supportedAiCli: DEFAULT_SUPPORTED_AI,
+          aiProvider: "openrouter",
+          aiModel: DEFAULT_MODEL,
           folders: [
             {
               id: "idea",
@@ -143,8 +243,9 @@ async function readSettings() {
 
   return {
     appName: normalizeWhitespace(settings.appName || "Life Recorder"),
-    preferredAiCli: DEFAULT_SUPPORTED_AI.includes(settings.preferredAiCli) ? settings.preferredAiCli : "codex",
-    supportedAiCli: DEFAULT_SUPPORTED_AI,
+    aiProvider: "openrouter",
+    aiModel: normalizeWhitespace(settings.aiModel || DEFAULT_MODEL),
+    openRouterApiKey: normalizeWhitespace(settings.openRouterApiKey || ""),
     folders: settings.folders.map(normalizeFolder).filter((folder) => folder.id && folder.label)
   };
 }
@@ -154,87 +255,96 @@ async function readIndex() {
   return Array.isArray(index.notes) ? index : { notes: [] };
 }
 
-function parseList(value) {
-  return String(value || "")
-    .trim()
-    .replace(/^\[/, "")
-    .replace(/\]$/, "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => item.replace(/^"(.*)"$/, "$1"));
+function buildTree(settings, index) {
+  return settings.folders.map((folder) => {
+    const notes = index.notes
+      .filter((note) => note.folderId === folder.id)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map((note) => ({
+        id: note.id,
+        title: note.title,
+        path: note.path,
+        createdAt: note.createdAt,
+        keywords: note.keywords,
+        normalizedContent: note.normalizedContent
+      }));
+
+    return {
+      ...folder,
+      count: notes.length,
+      notes
+    };
+  });
 }
 
-function extractKeywords(text) {
-  const stopWords = new Set([
-    "the", "and", "for", "that", "this", "with", "from", "have", "are", "was", "were",
-    "toi", "ban", "mot", "nhung", "duoc", "trong", "dang", "sau", "khi", "cho", "cua",
-    "voi", "vao", "tren", "hay", "neu", "can", "them", "ghi", "chu", "note", "idea"
-  ]);
+function parseFrontmatter(markdown) {
+  const match = markdown.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) {
+    return null;
+  }
 
-  const tokens = String(text || "")
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .match(/[a-z0-9]{3,}/g) || [];
-
-  const counts = new Map();
-  for (const token of tokens) {
-    if (stopWords.has(token)) {
+  const meta = {};
+  for (const line of match[1].split("\n")) {
+    const index = line.indexOf(":");
+    if (index <= 0) {
       continue;
     }
-    counts.set(token, (counts.get(token) || 0) + 1);
+    meta[line.slice(0, index).trim()] = line.slice(index + 1).trim();
+  }
+  return meta;
+}
+
+function parseNoteMarkdown(markdown, relativePath) {
+  const meta = parseFrontmatter(markdown);
+  if (!meta || !meta.id || !meta.title || !meta.folder) {
+    return null;
   }
 
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, 12)
-    .map(([token]) => token);
-}
-
-function summarizeText(text) {
-  return normalizeWhitespace(text).replace(/\n/g, " ").slice(0, 280);
-}
-
-function deriveTitle(text) {
-  const normalized = normalizeWhitespace(text);
-  const firstLine = normalized.split("\n")[0] || normalized;
-  const compact = firstLine.replace(/\s+/g, " ").trim();
-  if (!compact) {
-    return "Untitled";
-  }
-  return compact.length > 72 ? `${compact.slice(0, 69).trim()}...` : compact;
-}
-
-function similarityScore(base, target) {
-  const baseKeywords = new Set(base.keywords || []);
-  const targetKeywords = new Set(target.keywords || []);
-  const overlap = [...baseKeywords].filter((item) => targetKeywords.has(item));
-  const titleTokensBase = new Set((slugify(base.title).match(/[a-z0-9]+/g) || []));
-  const titleTokensTarget = new Set((slugify(target.title).match(/[a-z0-9]+/g) || []));
-  const titleOverlap = [...titleTokensBase].filter((item) => titleTokensTarget.has(item));
+  const rawMatch = markdown.match(/\n# Raw\n\n([\s\S]*?)\n# Normalized\n\n/);
+  const normalizedMatch = markdown.match(/\n# Normalized\n\n([\s\S]*?)\n?$/);
   return {
-    overlap,
-    score: overlap.length * 1.5 + titleOverlap.length * 2
+    id: meta.id,
+    title: JSON.parse(meta.title),
+    folderId: meta.folder,
+    aiSource: meta.aiSource || DEFAULT_MODEL,
+    createdAt: meta.createdAt || new Date().toISOString(),
+    updatedAt: meta.updatedAt || meta.createdAt || new Date().toISOString(),
+    rawContent: rawMatch ? rawMatch[1].trim() : "",
+    normalizedContent: normalizedMatch ? normalizedMatch[1].trim() : "",
+    keywords: parseList(meta.keywords),
+    related: parseList(meta.related).map((id) => ({ id })),
+    path: relativePath
   };
 }
 
-function collectRelatedNotes(candidate, existingNotes) {
-  return existingNotes
-    .map((note) => {
-      const relation = similarityScore(candidate, note);
-      return {
-        id: note.id,
-        title: note.title,
-        folderId: note.folderId,
-        score: relation.score,
-        overlap: relation.overlap,
-        path: note.path
-      };
-    })
-    .filter((note) => note.score >= 2.5 && note.overlap.length > 0)
-    .sort((a, b) => b.score - a.score || b.id.localeCompare(a.id))
-    .slice(0, 5);
+async function listMarkdownFiles(dir) {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const target = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await listMarkdownFiles(target)));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(target);
+    }
+  }
+  return files;
+}
+
+async function reconcileIndex() {
+  const diskFiles = await listMarkdownFiles(NOTES_DIR);
+  const notes = [];
+  for (const filePath of diskFiles) {
+    const markdown = await fs.readFile(filePath, "utf8");
+    const relativePath = path.relative(ROOT, filePath);
+    const note = parseNoteMarkdown(markdown, relativePath);
+    if (note) {
+      notes.push(note);
+    }
+  }
+
+  notes.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  await writeJson(INDEX_PATH, { notes });
 }
 
 function buildNoteId(folderId, title, rawContent) {
@@ -275,272 +385,255 @@ function toMarkdown(note) {
   ].join("\n");
 }
 
-function parseFrontmatter(markdown) {
-  const match = markdown.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) {
-    return null;
+async function refreshNoteMarkdown(filePath, note) {
+  await fs.writeFile(filePath, toMarkdown(note), "utf8");
+}
+
+function getOpenRouterClient(settings) {
+  const apiKey = normalizeWhitespace(process.env.OPENROUTER_API_KEY || settings?.openRouterApiKey || "");
+  if (!apiKey) {
+    fail(500, "Missing OPENROUTER_API_KEY. Add it to .env or your shell environment.");
   }
-  const meta = {};
-  for (const line of match[1].split("\n")) {
-    const index = line.indexOf(":");
-    if (index <= 0) {
+
+  return new OpenAI({
+    apiKey,
+    baseURL: "https://openrouter.ai/api/v1",
+    defaultHeaders: {
+      "HTTP-Referer": "http://localhost",
+      "X-Title": "Life Recorder"
+    }
+  });
+}
+
+function extractJson(text) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    throw new Error("Empty response from OpenRouter.");
+  }
+
+  const attempts = [raw];
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    attempts.push(fenced[1].trim());
+  }
+
+  for (const candidate of attempts) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // keep trying
+    }
+  }
+
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+
+    if (escaped) {
+      escaped = false;
       continue;
     }
-    meta[line.slice(0, index).trim()] = line.slice(index + 1).trim();
-  }
-  return meta;
-}
 
-function parseNoteMarkdown(markdown, relativePath) {
-  const meta = parseFrontmatter(markdown);
-  if (!meta || !meta.id || !meta.title || !meta.folder) {
-    return null;
-  }
-
-  const rawMatch = markdown.match(/\n# Raw\n\n([\s\S]*?)\n# Normalized\n\n/);
-  const normalizedMatch = markdown.match(/\n# Normalized\n\n([\s\S]*?)\n?$/);
-  return {
-    id: meta.id,
-    title: JSON.parse(meta.title),
-    folderId: meta.folder,
-    aiSource: meta.aiSource || "heuristic",
-    createdAt: meta.createdAt || new Date().toISOString(),
-    updatedAt: meta.updatedAt || meta.createdAt || new Date().toISOString(),
-    rawContent: rawMatch ? rawMatch[1].trim() : "",
-    normalizedContent: normalizedMatch ? normalizedMatch[1].trim() : "",
-    keywords: parseList(meta.keywords),
-    related: parseList(meta.related).map((id) => ({ id })),
-    path: relativePath
-  };
-}
-
-async function listMarkdownFiles(dir) {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files = [];
-  for (const entry of entries) {
-    const target = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await listMarkdownFiles(target)));
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      files.push(target);
+    if (char === "\\") {
+      escaped = true;
+      continue;
     }
-  }
-  return files;
-}
 
-async function reconcileIndex() {
-  const diskFiles = await listMarkdownFiles(NOTES_DIR);
-  const notes = [];
-  for (const filePath of diskFiles) {
-    const markdown = await fs.readFile(filePath, "utf8");
-    const relativePath = path.relative(ROOT, filePath);
-    const note = parseNoteMarkdown(markdown, relativePath);
-    if (note) {
-      notes.push(note);
+    if (char === "\"") {
+      inString = !inString;
+      continue;
     }
-  }
-  notes.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  await writeJson(INDEX_PATH, { notes });
-}
 
-function buildTree(settings, index) {
-  return settings.folders.map((folder) => {
-    const notes = index.notes
-      .filter((note) => note.folderId === folder.id)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map((note) => ({
-        id: note.id,
-        title: note.title,
-        path: note.path,
-        createdAt: note.createdAt,
-        keywords: note.keywords,
-        normalizedContent: note.normalizedContent
-      }));
+    if (inString) {
+      continue;
+    }
 
-    return {
-      ...folder,
-      count: notes.length,
-      notes
-    };
-  });
-}
-
-function getFolderTokens(folder) {
-  return extractKeywords([folder.id, folder.label, folder.description, ...(folder.hints || [])].join(" "));
-}
-
-function classifyFolderHeuristically(rawContent, settings, related) {
-  const keywords = extractKeywords(rawContent);
-  const relatedFolderBoost = new Map();
-  for (const note of related) {
-    relatedFolderBoost.set(note.folderId, (relatedFolderBoost.get(note.folderId) || 0) + note.score);
-  }
-
-  const ranked = settings.folders
-    .map((folder) => {
-      const folderTokens = getFolderTokens(folder);
-      const overlap = keywords.filter((token) => folderTokens.includes(token));
-      const score = overlap.length * 2 + (relatedFolderBoost.get(folder.id) || 0);
-      return { folder, score, overlap };
-    })
-    .sort((a, b) => b.score - a.score || a.folder.label.localeCompare(b.folder.label));
-
-  return ranked[0]?.folder.id || settings.folders[0]?.id;
-}
-
-function createFolderDraftHeuristically(intent) {
-  const normalizedIntent = normalizeWhitespace(intent);
-  const title = deriveTitle(normalizedIntent).replace(/\.\.\.$/, "");
-  const label = title
-    .split(/\s+/)
-    .slice(0, 4)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(" ");
-  return normalizeFolder({
-    id: slugify(label),
-    label,
-    description: `Nhom ghi chu cho: ${normalizedIntent.slice(0, 140)}`,
-    hints: extractKeywords(normalizedIntent)
-  });
-}
-
-async function findCommand(command) {
-  try {
-    const { stdout } = await execFileAsync("which", [command], { timeout: 2000 });
-    return stdout.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-function extractJsonObject(text) {
-  const match = String(text || "").match(/\{[\s\S]*\}/);
-  if (!match) {
-    return null;
-  }
-  return JSON.parse(match[0]);
-}
-
-async function runCodexJsonTask(prompt) {
-  const binary = await findCommand("codex");
-  if (!binary) {
-    throw new Error("Codex CLI not found");
-  }
-
-  const outputPath = path.join(os.tmpdir(), `life-recorder-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
-  try {
-    await execFileAsync(
-      binary,
-      [
-        "exec",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "read-only",
-        "--output-last-message",
-        outputPath,
-        prompt
-      ],
-      {
-        cwd: ROOT,
-        timeout: 6000,
-        maxBuffer: 1024 * 1024
+    if (char === "{") {
+      if (depth === 0) {
+        start = index;
       }
-    );
-    const raw = await fs.readFile(outputPath, "utf8");
-    return extractJsonObject(raw);
-  } finally {
-    await fs.rm(outputPath, { force: true }).catch(() => {});
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        const snippet = raw.slice(start, index + 1);
+        try {
+          return JSON.parse(snippet);
+        } catch {
+          start = -1;
+        }
+      }
+    }
   }
+
+  throw new Error("Invalid JSON response from OpenRouter.");
 }
 
-async function analyzeNoteWithAi(rawContent, settings, index) {
+function buildHeuristicNoteResult(rawContent, settings) {
   const title = deriveTitle(rawContent);
-  const normalizedContent = summarizeText(rawContent);
-  const keywords = extractKeywords(`${title}\n${rawContent}`);
-  const seedRelated = collectRelatedNotes({ title, normalizedContent, keywords }, index.notes);
-  const heuristicFolderId = classifyFolderHeuristically(rawContent, settings, seedRelated);
-
-  if (settings.preferredAiCli === "codex") {
-    try {
-      const result = await runCodexJsonTask(
-        [
-          "Analyze this note for a note-taking system.",
-          "Return only one JSON object with keys: title, normalizedContent, keywords, folderId.",
-          "Rules:",
-          "- title: concise and meaningful",
-          "- normalizedContent: cleaned summary in the same language as input",
-          "- keywords: array of up to 12 short keywords",
-          "- folderId: one of the allowed folder ids",
-          `Allowed folders: ${JSON.stringify(settings.folders.map((folder) => ({ id: folder.id, label: folder.label, description: folder.description, hints: folder.hints })))}`,
-          `Suggested folder from heuristics: ${heuristicFolderId}`,
-          `Raw note:\n${rawContent}`
-        ].join("\n")
-      );
-
-      if (
-        result &&
-        typeof result.title === "string" &&
-        typeof result.normalizedContent === "string" &&
-        Array.isArray(result.keywords) &&
-        settings.folders.some((folder) => folder.id === result.folderId)
-      ) {
-        return {
-          title: normalizeWhitespace(result.title) || title,
-          normalizedContent: normalizeWhitespace(result.normalizedContent) || normalizedContent,
-          keywords: result.keywords.map((item) => normalizeWhitespace(item)).filter(Boolean).slice(0, 12),
-          folderId: result.folderId,
-          aiSource: "codex"
-        };
-      }
-    } catch {
-      // Fallback below.
-    }
-  }
-
   return {
     title,
-    normalizedContent,
-    keywords,
-    folderId: heuristicFolderId,
+    normalizedContent: summarizeText(rawContent),
+    keywords: extractKeywords(`${title}\n${rawContent}`),
+    folderId: classifyFolderHeuristically(rawContent, settings),
     aiSource: "heuristic"
   };
 }
 
-async function createFolderDraftWithAi(intent, settings) {
-  const fallback = createFolderDraftHeuristically(intent);
+function buildHeuristicFolderDraft(intent, settings) {
+  const label = deriveTitle(intent)
+    .replace(/\.\.\.$/, "")
+    .split(/\s+/)
+    .slice(0, 4)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
 
-  if (settings.preferredAiCli === "codex") {
-    try {
-      const result = await runCodexJsonTask(
-        [
-          "Generate metadata for a new note folder.",
-          "Return only one JSON object with keys: id, label, description, hints.",
-          "Rules:",
-          "- id: short lowercase slug",
-          "- label: human-friendly short label",
-          "- description: specific routing guidance, not vague",
-          "- hints: array of up to 8 keywords or phrases used to recognize notes for this folder",
-          `Existing folders: ${JSON.stringify(settings.folders)}`,
-          `User intent:\n${intent}`
-        ].join("\n")
-      );
+  const draft = normalizeFolder({
+    id: slugify(label),
+    label,
+    description: `Nhom ghi chu cho: ${normalizeWhitespace(intent).slice(0, 140)}`,
+    hints: extractKeywords(intent)
+  });
 
-      if (result && typeof result.label === "string") {
-        const draft = normalizeFolder(result);
-        if (draft.id && draft.label && !settings.folders.some((folder) => folder.id === draft.id)) {
-          return { ...draft, aiSource: "codex" };
-        }
-      }
-    } catch {
-      // Fallback below.
-    }
+  if (settings.folders.some((folder) => folder.id === draft.id)) {
+    draft.id = `${draft.id}-${Math.random().toString(16).slice(2, 6)}`;
   }
 
-  return { ...fallback, aiSource: "heuristic" };
+  return {
+    ...draft,
+    aiSource: "heuristic"
+  };
 }
 
-async function refreshNoteMarkdown(filePath, note) {
-  await fs.writeFile(filePath, toMarkdown(note), "utf8");
+async function requestAiJson(settings, systemPrompt, userPrompt) {
+  const openrouter = getOpenRouterClient(settings);
+  try {
+    const completion = await openrouter.chat.completions.create({
+      model: settings.aiModel || DEFAULT_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.2,
+      stream: false
+    });
+
+    return extractJson(completion.choices[0]?.message?.content || "");
+  } catch (error) {
+    const detail = error?.message || "Unknown OpenRouter error";
+    fail(502, `OpenRouter API error: ${detail}`);
+  }
+}
+
+function ensureKeywords(value, rawContent) {
+  if (Array.isArray(value)) {
+    const sanitized = value.map((item) => normalizeWhitespace(item)).filter(Boolean).slice(0, 12);
+    if (sanitized.length) {
+      return sanitized;
+    }
+  }
+  return extractKeywords(rawContent);
+}
+
+async function analyzeNoteWithAi(rawContent, settings) {
+  try {
+    const result = await requestAiJson(
+      settings,
+      [
+        "Ban la he thong chuan hoa du lieu ca nhan.",
+        "Nhiem vu:",
+        "1. Dat tieu de ngan gon, ro nghia.",
+        "2. Chuan hoa noi dung thanh mot doan ngan ro rang bang cung ngon ngu voi dau vao.",
+        "3. Trich xuat keywords.",
+        "4. Chon suggested_folder tu danh sach cho phep.",
+        "5. Chi tra ve mot JSON object hop le, khong markdown, khong giai thich.",
+        "JSON format:",
+        "{",
+        '  "title": "string",',
+        '  "normalized_content": "string",',
+        '  "keywords": ["string"],',
+        '  "suggested_folder": "string"',
+        "}"
+      ].join("\n"),
+      [
+        `Allowed folders: ${JSON.stringify(settings.folders.map((folder) => ({ id: folder.id, label: folder.label, description: folder.description, hints: folder.hints })))}`,
+        `Raw note:\n${rawContent}`
+      ].join("\n\n")
+    );
+
+    const title = normalizeWhitespace(result.title || deriveTitle(rawContent)) || "Untitled";
+    const normalizedContent =
+      normalizeWhitespace(result.normalized_content || result.normalizedContent || summarizeText(rawContent)) ||
+      summarizeText(rawContent);
+    const keywords = ensureKeywords(result.keywords, `${title}\n${rawContent}`);
+    const folderId = normalizeWhitespace(result.suggested_folder || result.folderId || "");
+    if (!settings.folders.some((folder) => folder.id === folderId)) {
+      fail(422, "AI returned an invalid folder id.");
+    }
+
+    return {
+      title,
+      normalizedContent,
+      keywords,
+      folderId,
+      aiSource: settings.aiModel
+    };
+  } catch (error) {
+    if (error.status === 502) {
+      return buildHeuristicNoteResult(rawContent, settings);
+    }
+    throw error;
+  }
+}
+
+async function createFolderDraftWithAi(intent, settings) {
+  try {
+    const result = await requestAiJson(
+      settings,
+      [
+        "Ban la he thong tao metadata cho folder ghi chu.",
+        "Chi tra ve mot JSON object hop le, khong markdown, khong giai thich.",
+        "JSON format:",
+        "{",
+        '  "id": "string",',
+        '  "label": "string",',
+        '  "description": "string",',
+        '  "hints": ["string"]',
+        "}",
+        "Yeu cau:",
+        "- id la slug ngan gon lowercase",
+        "- label ngan, ro nghia",
+        "- description cu the de AI sau nay phan loai note",
+        "- hints la cac tu khoa/phrase giup routing folder"
+      ].join("\n"),
+      [
+        `Existing folders: ${JSON.stringify(settings.folders)}`,
+        `User intent:\n${intent}`
+      ].join("\n\n")
+    );
+
+    const draft = normalizeFolder(result);
+    if (!draft.id || !draft.label || !draft.description) {
+      fail(422, "AI returned an incomplete folder draft.");
+    }
+    if (settings.folders.some((folder) => folder.id === draft.id)) {
+      fail(422, "AI returned a duplicated folder id.");
+    }
+    return {
+      ...draft,
+      aiSource: settings.aiModel
+    };
+  } catch (error) {
+    if (error.status === 502) {
+      return buildHeuristicFolderDraft(intent, settings);
+    }
+    throw error;
+  }
 }
 
 async function addBacklinks(index, note) {
@@ -564,13 +657,21 @@ async function addBacklinks(index, note) {
       overlap: relatedNote.overlap || []
     }];
 
-    const markdown = await fs.readFile(path.join(ROOT, existing.path), "utf8");
-    const current = parseNoteMarkdown(markdown, existing.path);
-    if (!current) {
+    const currentPath = path.join(ROOT, existing.path);
+    const markdown = await fs.readFile(currentPath, "utf8");
+    const parsed = parseNoteMarkdown(markdown, existing.path);
+    if (!parsed) {
       continue;
     }
-    current.related = existing.related;
-    await refreshNoteMarkdown(path.join(ROOT, existing.path), current);
+    parsed.related = existing.related;
+    parsed.aiSource = existing.aiSource || DEFAULT_MODEL;
+    parsed.title = existing.title;
+    parsed.rawContent = parsed.rawContent;
+    parsed.normalizedContent = existing.normalizedContent;
+    parsed.keywords = existing.keywords;
+    parsed.createdAt = existing.createdAt;
+    parsed.updatedAt = existing.updatedAt;
+    await refreshNoteMarkdown(currentPath, parsed);
   }
 }
 
@@ -579,17 +680,15 @@ async function updateNoteFolder(index, noteId, targetFolderId) {
   if (!note) {
     fail(404, "Note not found.");
   }
-
   if (note.folderId === targetFolderId) {
     return note;
   }
 
   const currentPath = path.join(ROOT, note.path);
-  const fileName = path.basename(note.path);
   const nextDir = path.join(NOTES_DIR, targetFolderId);
-  const nextPath = path.join(nextDir, fileName);
-
+  const nextPath = path.join(nextDir, path.basename(note.path));
   await fs.mkdir(nextDir, { recursive: true });
+
   const markdown = await fs.readFile(currentPath, "utf8");
   const parsed = parseNoteMarkdown(markdown, note.path);
   if (!parsed) {
@@ -599,28 +698,26 @@ async function updateNoteFolder(index, noteId, targetFolderId) {
   parsed.folderId = targetFolderId;
   parsed.path = path.relative(ROOT, nextPath);
   parsed.updatedAt = new Date().toISOString();
+  parsed.aiSource = note.aiSource || DEFAULT_MODEL;
+  parsed.title = note.title;
+  parsed.rawContent = parsed.rawContent;
+  parsed.normalizedContent = note.normalizedContent;
+  parsed.keywords = note.keywords;
+  parsed.related = note.related || [];
+  parsed.createdAt = note.createdAt;
+
   note.folderId = targetFolderId;
   note.path = parsed.path;
   note.updatedAt = parsed.updatedAt;
 
-  await refreshNoteMarkdown(nextPath, {
-    ...parsed,
-    title: note.title,
-    rawContent: parsed.rawContent,
-    normalizedContent: parsed.normalizedContent,
-    keywords: note.keywords,
-    related: note.related || [],
-    aiSource: note.aiSource || "heuristic",
-    createdAt: note.createdAt,
-    updatedAt: note.updatedAt
-  });
-
+  await refreshNoteMarkdown(nextPath, parsed);
   await fs.rm(currentPath, { force: true });
 
   for (const item of index.notes) {
     if (!Array.isArray(item.related)) {
       continue;
     }
+
     let changed = false;
     item.related = item.related.map((related) => {
       if (related.id !== note.id) {
@@ -634,22 +731,21 @@ async function updateNoteFolder(index, noteId, targetFolderId) {
       continue;
     }
 
-    const otherMarkdown = await fs.readFile(path.join(ROOT, item.path), "utf8");
+    const otherPath = path.join(ROOT, item.path);
+    const otherMarkdown = await fs.readFile(otherPath, "utf8");
     const otherParsed = parseNoteMarkdown(otherMarkdown, item.path);
     if (!otherParsed) {
       continue;
     }
     otherParsed.related = item.related;
-    await refreshNoteMarkdown(path.join(ROOT, item.path), {
-      ...otherParsed,
-      title: item.title,
-      rawContent: otherParsed.rawContent,
-      normalizedContent: otherParsed.normalizedContent,
-      keywords: item.keywords,
-      aiSource: item.aiSource || "heuristic",
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt
-    });
+    otherParsed.aiSource = item.aiSource || DEFAULT_MODEL;
+    otherParsed.title = item.title;
+    otherParsed.rawContent = otherParsed.rawContent;
+    otherParsed.normalizedContent = item.normalizedContent;
+    otherParsed.keywords = item.keywords;
+    otherParsed.createdAt = item.createdAt;
+    otherParsed.updatedAt = item.updatedAt;
+    await refreshNoteMarkdown(otherPath, otherParsed);
   }
 
   return note;
@@ -658,14 +754,26 @@ async function updateNoteFolder(index, noteId, targetFolderId) {
 app.get("/api/bootstrap", async (req, res) => {
   try {
     const [settings, index] = await Promise.all([readSettings(), readIndex()]);
-    const tree = buildTree(settings, index);
     res.json({
       settings,
-      tree,
-      selectedFolderId: tree[0]?.id || null
+      tree: buildTree(settings, index),
+      selectedFolderId: settings.folders[0]?.id || null
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/notes/:noteId", async (req, res) => {
+  try {
+    const index = await readIndex();
+    const note = index.notes.find((item) => item.id === req.params.noteId);
+    if (!note) {
+      fail(404, "Note not found.");
+    }
+    res.json({ note });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
   }
 });
 
@@ -677,11 +785,12 @@ app.get("/api/folders/:folderId/notes", async (req, res) => {
       fail(404, "Folder not found.");
     }
 
-    const notes = index.notes
-      .filter((item) => item.folderId === folder.id)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-
-    res.json({ folder, notes });
+    res.json({
+      folder,
+      notes: index.notes
+        .filter((item) => item.folderId === folder.id)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    });
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message });
   }
@@ -740,23 +849,24 @@ app.post("/api/settings", async (req, res) => {
   try {
     const result = await withWriteLock(async () => {
       const current = await readSettings();
-      const next = req.body || {};
-      const merged = {
-        appName: normalizeWhitespace(next.appName || current.appName || "Life Recorder"),
-        preferredAiCli: DEFAULT_SUPPORTED_AI.includes(next.preferredAiCli) ? next.preferredAiCli : current.preferredAiCli,
-        supportedAiCli: DEFAULT_SUPPORTED_AI,
+      const nextSettings = {
+        appName: normalizeWhitespace(req.body.appName || current.appName || "Life Recorder"),
+        aiProvider: "openrouter",
+        aiModel: normalizeWhitespace(current.aiModel || DEFAULT_MODEL),
+        openRouterApiKey: normalizeWhitespace(req.body.openRouterApiKey || current.openRouterApiKey || ""),
         folders: current.folders
       };
 
-      await writeJson(SETTINGS_PATH, merged);
+      await writeJson(SETTINGS_PATH, nextSettings);
       await appendHistory({
         type: "settings.updated",
         at: new Date().toISOString(),
-        preferredAiCli: merged.preferredAiCli
+        aiModel: nextSettings.aiModel,
+        hasApiKey: Boolean(nextSettings.openRouterApiKey || process.env.OPENROUTER_API_KEY)
       });
 
       const index = await readIndex();
-      return { settings: merged, tree: buildTree(merged, index) };
+      return { settings: nextSettings, tree: buildTree(nextSettings, index) };
     });
 
     res.json(result);
@@ -775,25 +885,27 @@ app.post("/api/notes", async (req, res) => {
         fail(400, "Content is required.");
       }
 
-      const analyzed = await analyzeNoteWithAi(rawContent, settings, index);
-      const folder = settings.folders.find((item) => item.id === analyzed.folderId) || settings.folders[0];
-      const candidate = {
-        title: analyzed.title,
-        normalizedContent: analyzed.normalizedContent,
-        keywords: analyzed.keywords
-      };
-      const related = collectRelatedNotes(candidate, index.notes);
-      const noteId = buildNoteId(folder.id, analyzed.title, rawContent);
+      const analyzed = await analyzeNoteWithAi(rawContent, settings);
+      const related = collectRelatedNotes(
+        {
+          title: analyzed.title,
+          normalizedContent: analyzed.normalizedContent,
+          keywords: analyzed.keywords
+        },
+        index.notes
+      );
+
+      const noteId = buildNoteId(analyzed.folderId, analyzed.title, rawContent);
       const createdAt = new Date().toISOString();
       const fileName = `${noteId}-${slugify(analyzed.title) || "entry"}.md`;
-      const absoluteFolder = path.join(NOTES_DIR, folder.id);
+      const absoluteFolder = path.join(NOTES_DIR, analyzed.folderId);
       const absolutePath = path.join(absoluteFolder, fileName);
       const relativePath = path.relative(ROOT, absolutePath);
 
       const note = {
         id: noteId,
         title: analyzed.title,
-        folderId: folder.id,
+        folderId: analyzed.folderId,
         aiSource: analyzed.aiSource,
         createdAt,
         updatedAt: createdAt,
@@ -807,20 +919,7 @@ app.post("/api/notes", async (req, res) => {
       await fs.mkdir(absoluteFolder, { recursive: true });
       await refreshNoteMarkdown(absolutePath, note);
 
-      index.notes.push({
-        id: note.id,
-        title: note.title,
-        folderId: note.folderId,
-        aiSource: note.aiSource,
-        createdAt: note.createdAt,
-        updatedAt: note.updatedAt,
-        rawContent: note.rawContent,
-        normalizedContent: note.normalizedContent,
-        keywords: note.keywords,
-        related: note.related,
-        path: note.path
-      });
-
+      index.notes.push({ ...note });
       await addBacklinks(index, note);
       await writeJson(INDEX_PATH, index);
       await appendHistory({
@@ -861,10 +960,7 @@ app.post("/api/notes/:noteId/move", async (req, res) => {
         targetFolderId
       });
 
-      return {
-        note,
-        tree: buildTree(settings, index)
-      };
+      return { note, tree: buildTree(settings, index) };
     });
 
     res.json(result);
