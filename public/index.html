@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Life Recorder</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div>
+          <p class="eyebrow">Recorder</p>
+          <h1 id="app-name">Life Recorder</h1>
+          <p class="muted">Nhap nhanh, luu markdown, theo doi lien he giua cac note.</p>
+        </div>
+
+        <nav class="tabs">
+          <button class="tab is-active" data-tab="capture">Capture</button>
+          <button class="tab" data-tab="manage">Manage</button>
+          <button class="tab" data-tab="history">History</button>
+        </nav>
+
+        <section>
+          <div class="section-title">
+            <h2>Folders</h2>
+            <span id="folder-count" class="pill"></span>
+          </div>
+          <div id="folder-tree" class="tree"></div>
+        </section>
+      </aside>
+
+      <main class="main">
+        <section class="panel tab-panel is-active" data-panel="capture">
+          <div class="section-title">
+            <h2>New Entry</h2>
+            <span id="save-status" class="muted"></span>
+          </div>
+
+          <form id="note-form" class="stack">
+            <div class="grid two">
+              <label>
+                <span>Folder</span>
+                <select name="folderId" id="folder-select"></select>
+              </label>
+              <label>
+                <span>Author</span>
+                <input type="text" name="author" id="author-input" maxlength="80" />
+              </label>
+            </div>
+
+            <label>
+              <span>Title</span>
+              <input type="text" name="title" id="title-input" maxlength="160" required />
+            </label>
+
+            <label>
+              <span>Raw content</span>
+              <textarea name="rawContent" id="raw-content-input" rows="14" required></textarea>
+            </label>
+
+            <div class="actions">
+              <button type="submit" class="primary">Save Note</button>
+            </div>
+          </form>
+
+          <div id="note-result" class="result hidden"></div>
+        </section>
+
+        <section class="panel tab-panel" data-panel="manage">
+          <div class="section-title">
+            <h2>Settings</h2>
+            <span class="muted">Fixed folders only. No auto-create.</span>
+          </div>
+
+          <form id="settings-form" class="stack">
+            <div class="grid two">
+              <label>
+                <span>App name</span>
+                <input type="text" name="appName" id="settings-app-name" maxlength="80" required />
+              </label>
+              <label>
+                <span>Default author</span>
+                <input type="text" name="defaultAuthor" id="settings-default-author" maxlength="80" required />
+              </label>
+            </div>
+
+            <label>
+              <span>Default AI CLI</span>
+              <select name="preferredAiCli" id="settings-ai-cli">
+                <option value="codex">Codex CLI</option>
+                <option value="copilot">Copilot CLI</option>
+              </select>
+            </label>
+
+            <div class="section-title">
+              <h3>Folder Tree</h3>
+              <button type="button" id="add-folder-button" class="secondary">Add Folder</button>
+            </div>
+
+            <div id="folder-editor" class="stack"></div>
+
+            <div class="actions">
+              <button type="submit" class="primary">Save Settings</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel tab-panel" data-panel="history">
+          <div class="section-title">
+            <h2>Activity</h2>
+            <button type="button" id="refresh-history-button" class="secondary">Refresh</button>
+          </div>
+          <div id="history-list" class="history-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <template id="folder-editor-template">
+      <div class="folder-item">
+        <div class="grid two">
+          <label>
+            <span>Id</span>
+            <input type="text" data-field="id" maxlength="40" required />
+          </label>
+          <label>
+            <span>Label</span>
+            <input type="text" data-field="label" maxlength="80" required />
+          </label>
+        </div>
+        <label>
+          <span>Description</span>
+          <input type="text" data-field="description" maxlength="160" />
+        </label>
+        <div class="actions end">
+          <button type="button" class="danger" data-action="remove-folder">Remove</button>
+        </div>
+      </div>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+  </html>

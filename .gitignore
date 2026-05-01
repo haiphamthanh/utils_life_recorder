@@ -1,0 +1,5 @@
+node_modules
+.DS_Store
+storage/notes
+storage/system/index.json
+storage/system/history.log

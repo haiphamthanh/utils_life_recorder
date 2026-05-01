@@ -1,0 +1,26 @@
+{
+  "appName": "Life Recorder",
+  "defaultAuthor": "anonymous",
+  "preferredAiCli": "codex",
+  "supportedAiCli": [
+    "codex",
+    "copilot"
+  ],
+  "folders": [
+    {
+      "id": "idea",
+      "label": "Idea",
+      "description": "Y tuong, huong di, khai niem moi"
+    },
+    {
+      "id": "note",
+      "label": "Note",
+      "description": "Ghi chu nhanh, observation, thong tin tam"
+    },
+    {
+      "id": "topic",
+      "label": "Topic",
+      "description": "Chu de dang theo duoi dai hon"
+    }
+  ]
+}
